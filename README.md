@@ -19,6 +19,8 @@ save it instantly to a folder, and copy it to the clipboard for immediate pastin
 
 ---
 
+---
+
 ## 📂 Setup
 1. Install dependencies:
    ```bash
