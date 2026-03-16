@@ -20,6 +20,8 @@ OPEN_FOLDER_AFTER_SAVE = True
 OPEN_FILE_AFTER_SAVE   = False
 FILENAME_PREFIX        = "snap"
 SELECTION_ALPHA        = 0.20
+SAVE_FORMAT            = "WEBP"  # "PNG", "JPEG", "WEBP"
+IMAGE_QUALITY          = 80      # 1-100 (used for JPEG and WEBP)
 
 # ホットキー設定（Win32仮想キー）
 # Ctrl+Shift+A
@@ -141,9 +143,17 @@ class RegionSelector:
 
         save_dir = ensure_save_dir()
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        path = os.path.join(save_dir, f"{FILENAME_PREFIX}_{ts}.png")
+        ext = SAVE_FORMAT.lower()
+        if ext not in ["png", "jpeg", "jpg", "webp"]:
+            ext = "png"
+        if ext == "jpg": ext = "jpeg"
+
+        path = os.path.join(save_dir, f"{FILENAME_PREFIX}_{ts}.{ext}")
         try:
-            img.save(path)
+            if ext in ["jpeg", "webp"]:
+                img.save(path, format=ext.upper(), quality=IMAGE_QUALITY)
+            else:
+                img.save(path, format=ext.upper())
             print(f"[INFO] Saved: {path}", flush=True)
         except Exception as e:
             print(f"[ERROR] 保存に失敗: {e}", flush=True)
@@ -235,9 +245,17 @@ def do_fullscreen_capture(x, y, w, h):
 
     save_dir = ensure_save_dir()
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    path = os.path.join(save_dir, f"{FILENAME_PREFIX}_full_{ts}.png")
+    ext = SAVE_FORMAT.lower()
+    if ext not in ["png", "jpeg", "jpg", "webp"]:
+        ext = "png"
+    if ext == "jpg": ext = "jpeg"
+
+    path = os.path.join(save_dir, f"{FILENAME_PREFIX}_full_{ts}.{ext}")
     try:
-        img.save(path)
+        if ext in ["jpeg", "webp"]:
+            img.save(path, format=ext.upper(), quality=IMAGE_QUALITY)
+        else:
+            img.save(path, format=ext.upper())
         print(f"[INFO] Saved: {path}", flush=True)
     except Exception as e:
         print(f"[ERROR] 保存に失敗: {e}", flush=True)
@@ -324,6 +342,7 @@ def start_hotkey_loop():
     print("[QuickShot] Ctrl+Shift+S : 画面全体スクショ（マルチモニタ対応）", flush=True)
     print("[QuickShot] Ctrl+Shift+Q : 終了", flush=True)
     print(f"[QuickShot] 保存先ベース: {SAVE_DIR_BASE}", flush=True)
+    print(f"[QuickShot] 保存フォーマット: {SAVE_FORMAT} (Quality: {IMAGE_QUALITY})", flush=True)
     if USE_DATE_SUBFOLDER: print("[QuickShot] 日付サブフォルダ: 有効", flush=True)
     if OPEN_FILE_AFTER_SAVE: print("[QuickShot] 保存後: ファイルを開く", flush=True)
     elif OPEN_FOLDER_AFTER_SAVE: print("[QuickShot] 保存後: フォルダを開く", flush=True)
