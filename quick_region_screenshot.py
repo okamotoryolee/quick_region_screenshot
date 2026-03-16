@@ -27,12 +27,17 @@ IMAGE_QUALITY          = 80      # 1-100 (used for JPEG and WEBP)
 # Ctrl+Shift+A
 HOTKEY_MOD_CTRL  = 0x0002
 HOTKEY_MOD_SHIFT = 0x0004
-VK_A             = 0x41
+# Ctrl+Shift+S (Fullscreen)
+VK_S             = 0x53
+# Ctrl+Shift+Z (Pin)
+VK_Z             = 0x5A
 # 終了ホットキー Ctrl+Shift+Q
 VK_Q             = 0x51
 # ホットキーID（任意の整数）
-HOTKEY_ID_CAPTURE = 1
-HOTKEY_ID_QUIT    = 2
+HOTKEY_ID_CAPTURE    = 1
+HOTKEY_ID_QUIT       = 2
+HOTKEY_ID_FULLSCREEN = 3
+HOTKEY_ID_PIN        = 4
 # ================
 
 # ---- 便利関数 ----
@@ -172,6 +177,90 @@ class RegionSelector:
 
 def take_region_screenshot():
     RegionSelector().run()
+
+# ---- ピン留めUI ----
+class PinnedImageWindow:
+    def __init__(self, pil_img: Image.Image, x: int, y: int):
+        self.root = tk.Toplevel()
+        self.root.overrideredirect(True)
+        self.root.attributes("-topmost", True)
+        
+        from PIL import ImageTk
+        self.photo = ImageTk.PhotoImage(pil_img)
+        
+        width = pil_img.width
+        height = pil_img.height
+        
+        # 画面外にはみ出さないように初期位置を調整（簡易的）
+        screen_w, screen_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        pos_x = min(max(0, x), screen_w - width)
+        pos_y = min(max(0, y), screen_h - height)
+        
+        self.root.geometry(f"{width}x{height}+{pos_x}+{pos_y}")
+        
+        self.label = tk.Label(self.root, image=self.photo, bd=2, relief="solid", bg="gray")
+        self.label.pack(fill=tk.BOTH, expand=True)
+        
+        # ドラッグ移動用のイベントバインド
+        self.label.bind("<Button-1>", self.on_drag_start)
+        self.label.bind("<B1-Motion>", self.on_drag_motion)
+        
+        # 閉じる操作（右クリック または ダブルクリック または Esc）
+        self.label.bind("<Button-3>", self.close)
+        self.label.bind("<Double-Button-1>", self.close)
+        self.root.bind("<Escape>", self.close)
+        
+        self._drag_start_x = 0
+        self._drag_start_y = 0
+
+    def on_drag_start(self, event):
+        self._drag_start_x = event.x
+        self._drag_start_y = event.y
+
+    def on_drag_motion(self, event):
+        x = self.root.winfo_x() - self._drag_start_x + event.x
+        y = self.root.winfo_y() - self._drag_start_y + event.y
+        self.root.geometry(f"+{x}+{y}")
+
+    def close(self, event=None):
+        self.root.destroy()
+
+class PinRegionSelector(RegionSelector):
+    # 既存のリージョンセレクタを継承し、mouseupの挙動だけオーバライドする
+    def on_mouse_up(self, event):
+        end_x, end_y = event.x, event.y
+        x1 = self.vx + min(self.start_x, end_x)
+        y1 = self.vy + min(self.start_y, end_y)
+        x2 = self.vx + max(self.start_x, end_x)
+        y2 = self.vy + max(self.start_y, end_y)
+        if abs(x2 - x1) < 3 or abs(y2 - y1) < 3:
+            self.root.destroy(); return
+
+        self.root.withdraw(); self.root.update_idletasks()
+        time.sleep(0.03)
+
+        try:
+            img = grab_region_mss(x1, y1, x2, y2)
+        except Exception as e:
+            print(f"[ERROR] キャプチャ失敗: {e}", flush=True)
+            self.root.destroy(); return
+
+        # クリップボードには入れる（便利なので）
+        if ENABLE_CLIPBOARD_COPY:
+            copy_image_to_clipboard(img)
+
+        print("[INFO] Pinned region.", flush=True)
+        
+        # ピン留めウィンドウを生成して表示（親プロセスに依存するためメインループを共有させる工夫が必要）
+        # rootはwithdrawしているがmainloopは継続中。なので別のToplevelを作って管理する。
+        PinnedImageWindow(img, x1, y1)
+        
+        # ※ 注意：親のself.rootをdestroyするとToplevelも消えてしまうので、
+        # ピン留め用は self.root を withdraw したまま生かしておく。
+        # アプリ終了時に一括で消える。
+
+def take_pin_screenshot():
+    PinRegionSelector().run()
 
 # ---- モニター選択UI ----
 class FullScreenSelector:
@@ -328,6 +417,7 @@ def start_hotkey_loop():
     VK_A = 0x41
     VK_Q = 0x51
     VK_S = 0x53 # 'S' key
+    VK_Z = 0x5A # 'Z' key
 
     # RegisterHotKey(NULL, id, modifiers, vk)
     if not user32.RegisterHotKey(None, HOTKEY_ID_CAPTURE, HOTKEY_MOD_CTRL | HOTKEY_MOD_SHIFT, VK_A):
@@ -336,10 +426,13 @@ def start_hotkey_loop():
         print("[WARN] RegisterHotKey 失敗（Quit）", flush=True)
     if not user32.RegisterHotKey(None, HOTKEY_ID_FULLSCREEN, HOTKEY_MOD_CTRL | HOTKEY_MOD_SHIFT, VK_S):
         print("[WARN] RegisterHotKey 失敗（Fullscreen）", flush=True)
+    if not user32.RegisterHotKey(None, HOTKEY_ID_PIN, HOTKEY_MOD_CTRL | HOTKEY_MOD_SHIFT, VK_Z):
+        print("[WARN] RegisterHotKey 失敗（Pin）", flush=True)
 
     print("[QuickShot] 起動しました。以下のホットキーで待受けします。", flush=True)
     print("[QuickShot] Ctrl+Shift+A : 範囲指定スクショ", flush=True)
     print("[QuickShot] Ctrl+Shift+S : 画面全体スクショ（マルチモニタ対応）", flush=True)
+    print("[QuickShot] Ctrl+Shift+Z : 範囲指定でピン留め（最前面表示）", flush=True)
     print("[QuickShot] Ctrl+Shift+Q : 終了", flush=True)
     print(f"[QuickShot] 保存先ベース: {SAVE_DIR_BASE}", flush=True)
     print(f"[QuickShot] 保存フォーマット: {SAVE_FORMAT} (Quality: {IMAGE_QUALITY})", flush=True)
@@ -377,6 +470,8 @@ def start_hotkey_loop():
                     threading.Thread(target=take_region_screenshot, daemon=True).start()
                 elif hotkey_id == HOTKEY_ID_FULLSCREEN:
                     threading.Thread(target=take_fullscreen_screenshot, daemon=True).start()
+                elif hotkey_id == HOTKEY_ID_PIN:
+                    threading.Thread(target=take_pin_screenshot, daemon=True).start()
                 elif hotkey_id == HOTKEY_ID_QUIT:
                     print("[QuickShot] 終了ホットキー", flush=True)
                     break
@@ -387,6 +482,7 @@ def start_hotkey_loop():
         user32.UnregisterHotKey(None, HOTKEY_ID_CAPTURE)
         user32.UnregisterHotKey(None, HOTKEY_ID_QUIT)
         user32.UnregisterHotKey(None, HOTKEY_ID_FULLSCREEN)
+        user32.UnregisterHotKey(None, HOTKEY_ID_PIN)
 
 if __name__ == "__main__":
     print("[QuickShot] booting...", flush=True)
