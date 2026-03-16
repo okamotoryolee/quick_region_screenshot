@@ -10,8 +10,9 @@ save it instantly to a folder, and copy it to the clipboard for immediate pastin
 - **Hotkey-driven region capture**
   - `Ctrl + Shift + A` : Select a region and capture
   - `Ctrl + Shift + Q` : Quit the app
-- **Auto-organized storage**
+- **Auto-organized storage & formats**
   - Saves under `Pictures\QuickShots\YYYY-MM-DD\`
+  - Supports PNG, JPEG, and WEBP formats for smaller file sizes (perfect for AI prompts)
 - **Clipboard integration**
   - Captured images are automatically copied to the clipboard → just `Ctrl+V` to paste
 - **Lightweight and simple**
