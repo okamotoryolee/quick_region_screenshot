@@ -1,6 +1,6 @@
 @echo off
-cd /d "C:\Users\kung_\Documents\My tools\QuickShot"
-C:\Windows\py.exe -u quick_region_screenshot.py
+cd /d "%~dp0"
+py -u quick_region_screenshot.py
 echo.
-echo (エラーがあれば上に表示されます。内容をコピーして教えてください)
+echo (If there are errors, they will be shown above. Please copy and share them.)
 pause
