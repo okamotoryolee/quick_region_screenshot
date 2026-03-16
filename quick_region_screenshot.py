@@ -22,6 +22,7 @@ FILENAME_PREFIX        = "snap"
 SELECTION_ALPHA        = 0.20
 SAVE_FORMAT            = "WEBP"  # "PNG", "JPEG", "WEBP"
 IMAGE_QUALITY          = 80      # 1-100 (used for JPEG and WEBP)
+TOAST_DURATION_MS      = 4500   # トースト表示時間(ms)
 
 # ホットキー設定（Win32仮想キー）
 # Ctrl+Shift+A
@@ -95,6 +96,58 @@ def grab_region_mss(x1, y1, x2, y2) -> Image.Image:
         raw = sct.grab({"left": left, "top": top, "width": width, "height": height})
         return Image.frombytes("RGB", raw.size, raw.rgb)
 
+# ---- トースト通知 ----
+def show_toast(message: str, save_dir: str = None):
+    """完全独立スレッド・独自Tkルートで表示するトースト通知。
+    どのコンテキストから呼んでも安全（Toplevelpではなく Tk を使う）。"""
+    def _run():
+        try:
+            root = tk.Tk()
+            root.overrideredirect(True)
+            root.attributes("-topmost", True)
+            try:
+                root.attributes("-alpha", 0.93)
+            except Exception:
+                pass
+
+            BG     = "#1e1e2e"
+            FG     = "#cdd6f4"
+            ACCENT = "#89b4fa"
+
+            frame = tk.Frame(root, bg=BG, padx=16, pady=12)
+            frame.pack(fill=tk.BOTH, expand=True)
+
+            tk.Label(frame, text="\U0001f4f8  " + message,
+                     bg=BG, fg=FG, font=("Segoe UI", 10), anchor="w").pack(fill=tk.X)
+
+            if save_dir:
+                def _open_folder(e=None):
+                    open_path(save_dir)
+                    root.destroy()
+
+                hint = tk.Label(frame, text="\u30af\u30ea\u30c3\u30af\u3067\u30d5\u30a9\u30eb\u30c0\u3092\u958b\u304f",
+                                bg=BG, fg=ACCENT, font=("Segoe UI", 8),
+                                cursor="hand2", anchor="w")
+                hint.pack(fill=tk.X, pady=(3, 0))
+                hint.bind("<Button-1>", _open_folder)
+                root.bind("<Button-1>", _open_folder)
+
+            # 位置: 画面右下（タスクバー上）
+            root.update_idletasks()
+            sw = root.winfo_screenwidth()
+            sh = root.winfo_screenheight()
+            w  = root.winfo_reqwidth()
+            h  = root.winfo_reqheight()
+            margin = 16
+            root.geometry(f"{w}x{h}+{sw - w - margin}+{sh - h - margin - 48}")
+
+            root.after(TOAST_DURATION_MS, root.destroy)
+            root.mainloop()
+        except Exception as e:
+            print(f"[WARN] \u30c8\u30fc\u30b9\u30c8\u8868\u793a\u5931\u6557: {e}", flush=True)
+
+    threading.Thread(target=_run, daemon=True).start()
+
 # ---- 範囲選択UI ----
 class RegionSelector:
     def __init__(self):
@@ -166,10 +219,10 @@ class RegionSelector:
         if ENABLE_CLIPBOARD_COPY:
             copy_image_to_clipboard(img)
 
+        show_toast("保存完了", save_dir)
+
         if OPEN_FILE_AFTER_SAVE:
             open_path(path)
-        elif OPEN_FOLDER_AFTER_SAVE:
-            open_path(save_dir)
 
         self.root.destroy()
 
@@ -352,10 +405,10 @@ def do_fullscreen_capture(x, y, w, h):
     if ENABLE_CLIPBOARD_COPY:
         copy_image_to_clipboard(img)
 
+    show_toast("保存完了", save_dir)
+
     if OPEN_FILE_AFTER_SAVE:
         open_path(path)
-    elif OPEN_FOLDER_AFTER_SAVE:
-        open_path(save_dir)
 
 # ---- モニター列挙 (ctypes) ----
 def get_monitors_ctypes():
