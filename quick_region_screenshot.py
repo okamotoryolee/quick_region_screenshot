@@ -22,6 +22,9 @@ FILENAME_PREFIX        = "snap"
 SELECTION_ALPHA        = 0.20
 SAVE_FORMAT            = "WEBP"  # "PNG", "JPEG", "WEBP"
 IMAGE_QUALITY          = 80      # 1-100 (used for JPEG and WEBP)
+SHARE_COPY_FORMAT      = "PNG"   # "PNG", "JPEG" - for apps that do not accept WebP files
+SHARE_COPY_SUFFIX      = "share"
+SHARE_COPY_QUALITY     = 95      # 1-100 (used when SHARE_COPY_FORMAT is JPEG)
 TOAST_DURATION_MS      = 4500   # トースト表示時間(ms)
 
 # ホットキー設定（Win32仮想キー）
@@ -32,6 +35,8 @@ HOTKEY_MOD_SHIFT = 0x0004
 VK_S             = 0x53
 # Ctrl+Shift+Z (Pin)
 VK_Z             = 0x5A
+# Ctrl+Shift+L (Share-compatible copy)
+VK_L             = 0x4C
 # 終了ホットキー Ctrl+Shift+Q
 VK_Q             = 0x51
 # ホットキーID（任意の整数）
@@ -39,7 +44,11 @@ HOTKEY_ID_CAPTURE    = 1
 HOTKEY_ID_QUIT       = 2
 HOTKEY_ID_FULLSCREEN = 3
 HOTKEY_ID_PIN        = 4
+HOTKEY_ID_SHARE_COPY = 5
 # ================
+
+_last_capture_path = None
+_last_capture_lock = threading.Lock()
 
 # ---- 便利関数 ----
 def get_virtual_screen_geometry():
@@ -72,7 +81,7 @@ def open_path(path: str):
 
 def copy_image_to_clipboard(pil_img: Image.Image):
     if not _clipboard_ok:
-        return
+        return False
     try:
         with BytesIO() as output:
             pil_img.convert("RGB").save(output, "BMP")
@@ -84,8 +93,10 @@ def copy_image_to_clipboard(pil_img: Image.Image):
         finally:
             win32clipboard.CloseClipboard()
         print("[INFO] クリップボードへコピー完了（Ctrl+Vで貼付可）", flush=True)
+        return True
     except Exception as e:
         print(f"[WARN] クリップボードコピー失敗: {e}", flush=True)
+        return False
 
 def grab_region_mss(x1, y1, x2, y2) -> Image.Image:
     left, top = int(x1), int(y1)
@@ -96,10 +107,146 @@ def grab_region_mss(x1, y1, x2, y2) -> Image.Image:
         raw = sct.grab({"left": left, "top": top, "width": width, "height": height})
         return Image.frombytes("RGB", raw.size, raw.rgb)
 
+def normalized_save_format():
+    ext = SAVE_FORMAT.lower()
+    if ext not in ["png", "jpeg", "jpg", "webp"]:
+        ext = "png"
+    if ext == "jpg":
+        ext = "jpeg"
+    return ext
+
+def normalized_share_copy_format():
+    ext = SHARE_COPY_FORMAT.lower()
+    if ext not in ["png", "jpeg", "jpg"]:
+        ext = "png"
+    if ext == "jpg":
+        ext = "jpeg"
+    return ext
+
+def remember_last_capture(path):
+    if not path:
+        return
+    global _last_capture_path
+    with _last_capture_lock:
+        _last_capture_path = path
+
+def get_last_capture_path():
+    with _last_capture_lock:
+        return _last_capture_path
+
+def unique_path(path):
+    if not os.path.exists(path):
+        return path
+
+    base, ext = os.path.splitext(path)
+    index = 2
+    while True:
+        candidate = f"{base}_{index}{ext}"
+        if not os.path.exists(candidate):
+            return candidate
+        index += 1
+
+def save_capture_image(img: Image.Image, suffix: str = ""):
+    try:
+        save_dir = ensure_save_dir()
+    except Exception as e:
+        print(f"[ERROR] 保存先を作成できませんでした: {e}", flush=True)
+        return None, None
+
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    ext = normalized_save_format()
+    suffix_part = f"_{suffix}" if suffix else ""
+    path = os.path.join(save_dir, f"{FILENAME_PREFIX}_{ts}{suffix_part}.{ext}")
+    try:
+        if ext in ["jpeg", "webp"]:
+            img.save(path, format=ext.upper(), quality=IMAGE_QUALITY)
+        else:
+            img.save(path, format=ext.upper())
+        print(f"[INFO] Saved: {path}", flush=True)
+        return path, save_dir
+    except Exception as e:
+        print(f"[ERROR] 保存に失敗: {e}", flush=True)
+        return None, save_dir
+
+def show_capture_result(path, save_dir, copied: bool):
+    if path:
+        remember_last_capture(path)
+        show_toast("保存完了", save_dir, path)
+        if OPEN_FILE_AFTER_SAVE:
+            open_path(path)
+        return
+
+    if copied:
+        show_toast("保存失敗 / コピー完了")
+    else:
+        show_toast("保存に失敗しました")
+
+def create_share_copy(source_path):
+    if not source_path or not os.path.exists(source_path):
+        show_toast("共有用コピーの元画像がありません")
+        return None
+
+    ext = normalized_share_copy_format()
+    target_ext = "jpg" if ext == "jpeg" else ext
+    base, _ = os.path.splitext(source_path)
+    target_path = unique_path(f"{base}_{SHARE_COPY_SUFFIX}.{target_ext}")
+
+    try:
+        with Image.open(source_path) as img:
+            if ext == "jpeg":
+                out = img.convert("RGB")
+                out.save(target_path, format="JPEG", quality=SHARE_COPY_QUALITY, optimize=True)
+            else:
+                out = img.convert("RGB")
+                out.save(target_path, format="PNG", optimize=True)
+
+        print(f"[INFO] Share copy: {target_path}", flush=True)
+
+        copied = False
+        if ENABLE_CLIPBOARD_COPY:
+            with Image.open(target_path) as img:
+                copied = copy_image_to_clipboard(img)
+
+        message = f"共有用{ext.upper()}を作成"
+        if not copied and ENABLE_CLIPBOARD_COPY:
+            message += " / コピー失敗"
+        show_toast(message, os.path.dirname(target_path))
+        return target_path
+    except Exception as e:
+        print(f"[ERROR] 共有用コピー作成に失敗: {e}", flush=True)
+        show_toast("共有用コピー作成に失敗")
+        return None
+
+def create_share_copy_from_latest():
+    create_share_copy(get_last_capture_path())
+
+def clamp_window_to_virtual_screen(x: int, y: int, width: int, height: int):
+    vx, vy, vw, vh = get_virtual_screen_geometry()
+    max_x = vx + max(0, vw - width)
+    max_y = vy + max(0, vh - height)
+    return min(max(vx, x), max_x), min(max(vy, y), max_y)
+
+def set_window_bounds(window, x: int, y: int, width: int, height: int):
+    try:
+        if x >= 0 and y >= 0:
+            window.geometry(f"{width}x{height}+{x}+{y}")
+            return
+
+        window.geometry(f"{width}x{height}+0+0")
+        window.update_idletasks()
+        import ctypes
+        HWND_TOPMOST = -1
+        SWP_NOACTIVATE = 0x0010
+        ctypes.windll.user32.SetWindowPos(
+            window.winfo_id(), HWND_TOPMOST, int(x), int(y), int(width), int(height), SWP_NOACTIVATE
+        )
+    except Exception:
+        window.geometry(f"{width}x{height}+0+0")
+
 # ---- トースト通知 ----
-def show_toast(message: str, save_dir: str = None):
+def show_toast(message: str, save_dir: str = None, share_source_path: str = None):
     """完全独立スレッド・独自Tkルートで表示するトースト通知。
-    どのコンテキストから呼んでも安全（Toplevelpではなく Tk を使う）。"""
+    どのコンテキストから呼んでも安全（Toplevelではなく Tk を使う）。"""
     def _run():
         try:
             root = tk.Tk()
@@ -124,12 +271,27 @@ def show_toast(message: str, save_dir: str = None):
                 def _open_folder(e=None):
                     open_path(save_dir)
                     root.destroy()
+                    return "break"
+
+                def _create_share_copy(e=None):
+                    create_share_copy(share_source_path)
+                    root.destroy()
+                    return "break"
 
                 hint = tk.Label(frame, text="\u30af\u30ea\u30c3\u30af\u3067\u30d5\u30a9\u30eb\u30c0\u3092\u958b\u304f",
                                 bg=BG, fg=ACCENT, font=("Segoe UI", 8),
                                 cursor="hand2", anchor="w")
                 hint.pack(fill=tk.X, pady=(3, 0))
                 hint.bind("<Button-1>", _open_folder)
+
+                if share_source_path:
+                    share_format = normalized_share_copy_format().upper()
+                    share_hint = tk.Label(frame, text=f"\u5171\u6709\u7528{share_format}\u3092\u4f5c\u6210",
+                                          bg=BG, fg=ACCENT, font=("Segoe UI", 8),
+                                          cursor="hand2", anchor="w")
+                    share_hint.pack(fill=tk.X, pady=(3, 0))
+                    share_hint.bind("<Button-1>", _create_share_copy)
+
                 root.bind("<Button-1>", _open_folder)
 
             # 位置: 画面右下（タスクバー上）
@@ -199,30 +361,13 @@ class RegionSelector:
             print(f"[ERROR] キャプチャ失敗: {e}", flush=True)
             self.root.destroy(); return
 
-        save_dir = ensure_save_dir()
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        ext = SAVE_FORMAT.lower()
-        if ext not in ["png", "jpeg", "jpg", "webp"]:
-            ext = "png"
-        if ext == "jpg": ext = "jpeg"
+        path, save_dir = save_capture_image(img)
 
-        path = os.path.join(save_dir, f"{FILENAME_PREFIX}_{ts}.{ext}")
-        try:
-            if ext in ["jpeg", "webp"]:
-                img.save(path, format=ext.upper(), quality=IMAGE_QUALITY)
-            else:
-                img.save(path, format=ext.upper())
-            print(f"[INFO] Saved: {path}", flush=True)
-        except Exception as e:
-            print(f"[ERROR] 保存に失敗: {e}", flush=True)
-
+        copied = False
         if ENABLE_CLIPBOARD_COPY:
-            copy_image_to_clipboard(img)
+            copied = copy_image_to_clipboard(img)
 
-        show_toast("保存完了", save_dir)
-
-        if OPEN_FILE_AFTER_SAVE:
-            open_path(path)
+        show_capture_result(path, save_dir, copied)
 
         self.root.destroy()
 
@@ -244,12 +389,10 @@ class PinnedImageWindow:
         width = pil_img.width
         height = pil_img.height
         
-        # 画面外にはみ出さないように初期位置を調整（簡易的）
-        screen_w, screen_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        pos_x = min(max(0, x), screen_w - width)
-        pos_y = min(max(0, y), screen_h - height)
+        # 画面外にはみ出さないように、仮想スクリーン座標で初期位置を調整する。
+        pos_x, pos_y = clamp_window_to_virtual_screen(x, y, width, height)
         
-        self.root.geometry(f"{width}x{height}+{pos_x}+{pos_y}")
+        set_window_bounds(self.root, pos_x, pos_y, width, height)
         
         self.label = tk.Label(self.root, image=self.photo, bd=2, relief="solid", bg="gray")
         self.label.pack(fill=tk.BOTH, expand=True)
@@ -385,30 +528,13 @@ def do_fullscreen_capture(x, y, w, h):
         print(f"[ERROR] キャプチャ失敗: {e}", flush=True)
         return
 
-    save_dir = ensure_save_dir()
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    ext = SAVE_FORMAT.lower()
-    if ext not in ["png", "jpeg", "jpg", "webp"]:
-        ext = "png"
-    if ext == "jpg": ext = "jpeg"
+    path, save_dir = save_capture_image(img, "full")
 
-    path = os.path.join(save_dir, f"{FILENAME_PREFIX}_full_{ts}.{ext}")
-    try:
-        if ext in ["jpeg", "webp"]:
-            img.save(path, format=ext.upper(), quality=IMAGE_QUALITY)
-        else:
-            img.save(path, format=ext.upper())
-        print(f"[INFO] Saved: {path}", flush=True)
-    except Exception as e:
-        print(f"[ERROR] 保存に失敗: {e}", flush=True)
-
+    copied = False
     if ENABLE_CLIPBOARD_COPY:
-        copy_image_to_clipboard(img)
+        copied = copy_image_to_clipboard(img)
 
-    show_toast("保存完了", save_dir)
-
-    if OPEN_FILE_AFTER_SAVE:
-        open_path(path)
+    show_capture_result(path, save_dir, copied)
 
 # ---- モニター列挙 (ctypes) ----
 def get_monitors_ctypes():
@@ -464,6 +590,8 @@ def start_hotkey_loop():
     HOTKEY_ID_CAPTURE    = 1
     HOTKEY_ID_QUIT       = 2
     HOTKEY_ID_FULLSCREEN = 3
+    HOTKEY_ID_PIN        = 4
+    HOTKEY_ID_SHARE_COPY = 5
     
     HOTKEY_MOD_CTRL  = 0x0002
     HOTKEY_MOD_SHIFT = 0x0004
@@ -471,6 +599,7 @@ def start_hotkey_loop():
     VK_Q = 0x51
     VK_S = 0x53 # 'S' key
     VK_Z = 0x5A # 'Z' key
+    VK_L = 0x4C # 'L' key
 
     # RegisterHotKey(NULL, id, modifiers, vk)
     if not user32.RegisterHotKey(None, HOTKEY_ID_CAPTURE, HOTKEY_MOD_CTRL | HOTKEY_MOD_SHIFT, VK_A):
@@ -481,17 +610,20 @@ def start_hotkey_loop():
         print("[WARN] RegisterHotKey 失敗（Fullscreen）", flush=True)
     if not user32.RegisterHotKey(None, HOTKEY_ID_PIN, HOTKEY_MOD_CTRL | HOTKEY_MOD_SHIFT, VK_Z):
         print("[WARN] RegisterHotKey 失敗（Pin）", flush=True)
+    if not user32.RegisterHotKey(None, HOTKEY_ID_SHARE_COPY, HOTKEY_MOD_CTRL | HOTKEY_MOD_SHIFT, VK_L):
+        print("[WARN] RegisterHotKey 失敗（Share copy）", flush=True)
 
     print("[QuickShot] 起動しました。以下のホットキーで待受けします。", flush=True)
     print("[QuickShot] Ctrl+Shift+A : 範囲指定スクショ", flush=True)
     print("[QuickShot] Ctrl+Shift+S : 画面全体スクショ（マルチモニタ対応）", flush=True)
     print("[QuickShot] Ctrl+Shift+Z : 範囲指定でピン留め（最前面表示）", flush=True)
+    print("[QuickShot] Ctrl+Shift+L : 直近画像の共有用PNGを作成", flush=True)
     print("[QuickShot] Ctrl+Shift+Q : 終了", flush=True)
     print(f"[QuickShot] 保存先ベース: {SAVE_DIR_BASE}", flush=True)
     print(f"[QuickShot] 保存フォーマット: {SAVE_FORMAT} (Quality: {IMAGE_QUALITY})", flush=True)
     if USE_DATE_SUBFOLDER: print("[QuickShot] 日付サブフォルダ: 有効", flush=True)
     if OPEN_FILE_AFTER_SAVE: print("[QuickShot] 保存後: ファイルを開く", flush=True)
-    elif OPEN_FOLDER_AFTER_SAVE: print("[QuickShot] 保存後: フォルダを開く", flush=True)
+    elif OPEN_FOLDER_AFTER_SAVE: print("[QuickShot] 保存後: 通知クリックでフォルダを開く", flush=True)
     if ENABLE_CLIPBOARD_COPY:
         print(f"[QuickShot] クリップボード: {'有効' if _clipboard_ok else 'pywin32未検出→無効'}", flush=True)
 
@@ -525,6 +657,8 @@ def start_hotkey_loop():
                     threading.Thread(target=take_fullscreen_screenshot, daemon=True).start()
                 elif hotkey_id == HOTKEY_ID_PIN:
                     threading.Thread(target=take_pin_screenshot, daemon=True).start()
+                elif hotkey_id == HOTKEY_ID_SHARE_COPY:
+                    threading.Thread(target=create_share_copy_from_latest, daemon=True).start()
                 elif hotkey_id == HOTKEY_ID_QUIT:
                     print("[QuickShot] 終了ホットキー", flush=True)
                     break
@@ -536,6 +670,7 @@ def start_hotkey_loop():
         user32.UnregisterHotKey(None, HOTKEY_ID_QUIT)
         user32.UnregisterHotKey(None, HOTKEY_ID_FULLSCREEN)
         user32.UnregisterHotKey(None, HOTKEY_ID_PIN)
+        user32.UnregisterHotKey(None, HOTKEY_ID_SHARE_COPY)
 
 if __name__ == "__main__":
     print("[QuickShot] booting...", flush=True)

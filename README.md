@@ -20,11 +20,13 @@
 | `Ctrl + Shift + A` | Draw a region and capture (saves as file + clipboard) |
 | `Ctrl + Shift + S` | Full-screen capture — supports **multi-monitor selection** |
 | `Ctrl + Shift + Z` | **Pin a region** to screen as a floating overlay |
+| `Ctrl + Shift + L` | Create a LINE/app-friendly PNG copy from the latest capture |
 | `Ctrl + Shift + Q` | Quit QuickShot |
 
 - 📁 **Auto-saves** to `Pictures\QuickShots\YYYY-MM-DD\`
 - 📋 **Auto-copies** the image to clipboard — just `Ctrl+V` to paste
 - 🖼️ **Formats**: PNG, JPEG, WEBP (configurable quality)
+- 🔁 **Compatibility copy**: make a real PNG copy for apps that reject WebP drag-and-drop
 - 🔔 **Toast notification** with a clickable folder link after each save
 - 📌 **Pin to screen** — keep a captured region floating on top while you type prompts
 
@@ -65,6 +67,7 @@ Open `quick_region_screenshot.py` and edit the settings block at the top:
 ```python
 SAVE_FORMAT   = "WEBP"   # "PNG", "JPEG", "WEBP"
 IMAGE_QUALITY = 80       # 1–100 (for JPEG and WEBP)
+SHARE_COPY_FORMAT = "PNG" # For apps that do not accept WebP files
 TOAST_DURATION_MS = 4500 # Toast display time
 ```
 
