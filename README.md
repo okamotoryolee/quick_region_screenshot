@@ -25,10 +25,11 @@
 
 - 📁 **Auto-saves** to `Pictures\QuickShots\YYYY-MM-DD\`
 - 📋 **Auto-copies** the image to clipboard — just `Ctrl+V` to paste
-- 🖼️ **Formats**: PNG, JPEG, WEBP (configurable quality)
+- 🖼️ **PNG by default** — preserves small text when an image file is given to AI
 - 🔁 **Compatibility copy**: make a real PNG copy for apps that reject WebP drag-and-drop
 - 🔔 **Toast notification** with a clickable folder link after each save
 - 📌 **Pin to screen** — keep a captured region floating on top while you type prompts
+- 📥 **System-tray menu** — capture, open the save folder, or clean up old dated folders
 
 ---
 
@@ -65,11 +66,16 @@ The app starts silently in the background and listens for hotkeys.
 Open `quick_region_screenshot.py` and edit the settings block at the top:
 
 ```python
-SAVE_FORMAT   = "WEBP"   # "PNG", "JPEG", "WEBP"
+SAVE_FORMAT   = "PNG"    # "PNG", "JPEG", "WEBP"
 IMAGE_QUALITY = 80       # 1–100 (for JPEG and WEBP)
 SHARE_COPY_FORMAT = "PNG" # For apps that do not accept WebP files
 TOAST_DURATION_MS = 4500 # Toast display time
+CLEANUP_KEEP_DAYS = 30   # Old dated folders to delete from the tray menu
 ```
+
+The notification-area icon provides capture actions, **Open save folder**, and
+**Clean old images**. Cleanup asks for confirmation, keeps today's images, and
+only removes dated folders older than `CLEANUP_KEEP_DAYS`.
 
 ---
 

@@ -1,7 +1,13 @@
 # quick_region_screenshot.py  — Win32 RegisterHotKey 安定版
-import os, sys, time, datetime, threading, tkinter as tk
+import os, sys, time, datetime, threading, shutil, tkinter as tk
 from PIL import Image
 import mss                    # pip install mss
+try:
+    import pystray             # pip install pystray
+    _tray_ok = True
+except Exception:
+    pystray = None
+    _tray_ok = False
 # クリップボード（任意）
 ENABLE_CLIPBOARD_COPY = True  # 必要なければ False
 _clipboard_ok = False
@@ -20,12 +26,14 @@ OPEN_FOLDER_AFTER_SAVE = True
 OPEN_FILE_AFTER_SAVE   = False
 FILENAME_PREFIX        = "snap"
 SELECTION_ALPHA        = 0.20
-SAVE_FORMAT            = "WEBP"  # "PNG", "JPEG", "WEBP"
+SAVE_FORMAT            = "PNG"   # AIへファイルで渡す用途を優先。 "PNG", "JPEG", "WEBP"
 IMAGE_QUALITY          = 80      # 1-100 (used for JPEG and WEBP)
 SHARE_COPY_FORMAT      = "PNG"   # "PNG", "JPEG" - for apps that do not accept WebP files
 SHARE_COPY_SUFFIX      = "share"
 SHARE_COPY_QUALITY     = 95      # 1-100 (used when SHARE_COPY_FORMAT is JPEG)
 TOAST_DURATION_MS      = 4500   # トースト表示時間(ms)
+TRAY_ICON_PATH         = os.path.join(os.path.dirname(os.path.abspath(__file__)), "1-0ac5b72c.ico")
+CLEANUP_KEEP_DAYS      = 30     # 古い日付フォルダを整理する際に残す日数（当日分は常に残す）
 
 # ホットキー設定（Win32仮想キー）
 # Ctrl+Shift+A
@@ -49,6 +57,8 @@ HOTKEY_ID_SHARE_COPY = 5
 
 _last_capture_path = None
 _last_capture_lock = threading.Lock()
+_tray_icon = None
+_main_thread_id = None
 
 # ---- 便利関数 ----
 def get_virtual_screen_geometry():
@@ -78,6 +88,116 @@ def open_path(path: str):
         os.startfile(path)
     except Exception as e:
         print(f"[WARN] パスを開けませんでした: {e}", flush=True)
+
+def open_save_folder():
+    """日付別フォルダの親を開く。まだ保存していない場合も作成する。"""
+    try:
+        os.makedirs(SAVE_DIR_BASE, exist_ok=True)
+        open_path(SAVE_DIR_BASE)
+    except Exception as e:
+        print(f"[WARN] 保存フォルダを開けませんでした: {e}", flush=True)
+
+def get_expired_capture_folders():
+    """保持期限を過ぎた QuickShots の日付フォルダだけを返す。"""
+    if not os.path.isdir(SAVE_DIR_BASE):
+        return []
+
+    cutoff = datetime.date.today() - datetime.timedelta(days=CLEANUP_KEEP_DAYS)
+    expired = []
+    for entry in os.scandir(SAVE_DIR_BASE):
+        if not entry.is_dir():
+            continue
+        try:
+            folder_date = datetime.datetime.strptime(entry.name, "%Y-%m-%d").date()
+        except ValueError:
+            continue  # 日付形式以外のフォルダには触れない
+        if folder_date < cutoff:
+            expired.append(entry.path)
+    return expired
+
+def cleanup_old_captures():
+    """確認を取って、保持期限より古い日付フォルダを削除する。"""
+    folders = get_expired_capture_folders()
+    if not folders:
+        show_toast(f"整理対象なし（直近{CLEANUP_KEEP_DAYS}日を保持）")
+        return
+
+    root = None
+    try:
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        confirmed = messagebox.askyesno(
+            "QuickShot の保存フォルダを整理",
+            f"{len(folders)} 個の日付フォルダを削除します。\n"
+            f"直近 {CLEANUP_KEEP_DAYS} 日分と当日分は残ります。\n\n"
+            "この操作は元に戻せません。続けますか？",
+            parent=root,
+        )
+    except Exception as e:
+        print(f"[WARN] 整理の確認画面を表示できませんでした: {e}", flush=True)
+        return
+    finally:
+        if root is not None:
+            root.destroy()
+
+    if not confirmed:
+        return
+
+    deleted = 0
+    for folder in folders:
+        try:
+            shutil.rmtree(folder)
+            deleted += 1
+        except Exception as e:
+            print(f"[WARN] 整理中に削除できませんでした: {folder}: {e}", flush=True)
+
+    show_toast(f"保存フォルダを整理：{deleted} 個を削除")
+
+def run_in_background(action):
+    threading.Thread(target=action, daemon=True).start()
+
+def request_app_exit():
+    """トレイメニューから、ホットキー待受け中のメインスレッドを終了させる。"""
+    global _tray_icon
+    if _tray_icon is not None:
+        _tray_icon.stop()
+    if _main_thread_id is not None:
+        try:
+            import ctypes
+            WM_QUIT = 0x0012
+            ctypes.windll.user32.PostThreadMessageW(_main_thread_id, WM_QUIT, 0, 0)
+        except Exception as e:
+            print(f"[WARN] 終了要求を送れませんでした: {e}", flush=True)
+
+def start_tray_icon():
+    """macOS のメニューバー相当となる Windows 通知領域アイコンを開始する。"""
+    global _tray_icon
+    if not _tray_ok:
+        print("[WARN] pystray未検出のため通知領域アイコンは無効です", flush=True)
+        return
+
+    try:
+        with Image.open(TRAY_ICON_PATH) as source:
+            icon_image = source.convert("RGBA").copy()
+        menu = pystray.Menu(
+            pystray.MenuItem("範囲をキャプチャ", lambda icon, item: run_in_background(take_region_screenshot)),
+            pystray.MenuItem("画面全体をキャプチャ", lambda icon, item: run_in_background(take_fullscreen_screenshot)),
+            pystray.MenuItem("範囲をピン留め", lambda icon, item: run_in_background(take_pin_screenshot)),
+            pystray.MenuItem("共有用PNGを作成", lambda icon, item: run_in_background(create_share_copy_from_latest)),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("保存フォルダを開く", lambda icon, item: run_in_background(open_save_folder)),
+            pystray.MenuItem(f"古い画像を整理（{CLEANUP_KEEP_DAYS}日より前）", lambda icon, item: run_in_background(cleanup_old_captures)),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("終了", lambda icon, item: request_app_exit()),
+        )
+        _tray_icon = pystray.Icon("QuickShot", icon_image, "QuickShot", menu)
+        threading.Thread(target=_tray_icon.run, daemon=True).start()
+        print("[QuickShot] 通知領域アイコンを開始しました", flush=True)
+    except Exception as e:
+        _tray_icon = None
+        print(f"[WARN] 通知領域アイコンを開始できませんでした: {e}", flush=True)
 
 def copy_image_to_clipboard(pil_img: Image.Image):
     if not _clipboard_ok:
@@ -580,11 +700,13 @@ def take_fullscreen_screenshot():
 
 # ---- Win32ホットキー待受け ----
 def start_hotkey_loop():
+    global _main_thread_id, _tray_icon
     import ctypes
     from ctypes import wintypes
 
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
+    _main_thread_id = kernel32.GetCurrentThreadId()
 
     # Constants
     HOTKEY_ID_CAPTURE    = 1
@@ -612,6 +734,8 @@ def start_hotkey_loop():
         print("[WARN] RegisterHotKey 失敗（Pin）", flush=True)
     if not user32.RegisterHotKey(None, HOTKEY_ID_SHARE_COPY, HOTKEY_MOD_CTRL | HOTKEY_MOD_SHIFT, VK_L):
         print("[WARN] RegisterHotKey 失敗（Share copy）", flush=True)
+
+    start_tray_icon()
 
     print("[QuickShot] 起動しました。以下のホットキーで待受けします。", flush=True)
     print("[QuickShot] Ctrl+Shift+A : 範囲指定スクショ", flush=True)
@@ -671,6 +795,8 @@ def start_hotkey_loop():
         user32.UnregisterHotKey(None, HOTKEY_ID_FULLSCREEN)
         user32.UnregisterHotKey(None, HOTKEY_ID_PIN)
         user32.UnregisterHotKey(None, HOTKEY_ID_SHARE_COPY)
+        if _tray_icon is not None:
+            _tray_icon.stop()
 
 if __name__ == "__main__":
     print("[QuickShot] booting...", flush=True)
