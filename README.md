@@ -56,8 +56,10 @@ python quick_region_screenshot.py
 
 The app starts silently in the background and listens for hotkeys.
 
-> 💡 **Tip**: For easy startup, double-click `run_quickshot_debug.bat`  
-> (displays errors if something goes wrong — handy for troubleshooting)
+> 💡 **通常起動**: `run_quickshot.bat` をダブルクリックしてください。
+> ターミナルを表示せず、通知領域に常駐します。
+>
+> **問題調査**: `run_quickshot_debug.bat` を使ってください。エラーを表示したままにできます。
 
 ---
 
